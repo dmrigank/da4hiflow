@@ -34,8 +34,10 @@ ruff format .
 ### 5. Run the CLI stub
 
 ```bash
-python scripts/run_experiment.py
-python scripts/run_experiment.py --config configs/example.yaml
+python scripts/run_experiment.py --config configs/linear1d_direct_insert.json
+# optional arguments:
+#   --output-root <dir>  (default "runs")
+#   --run-name <name>    (uses timestamp if omitted)
 ```
 
 ## Testing
