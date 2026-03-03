@@ -9,7 +9,9 @@ da4hiflow.egg-info/entry_points.txt
 da4hiflow.egg-info/requires.txt
 da4hiflow.egg-info/top_level.txt
 da4hiflow/assimilators/__init__.py
+da4hiflow/assimilators/denkf.py
 da4hiflow/assimilators/direct_insertion.py
+da4hiflow/assimilators/enkf.py
 da4hiflow/core/__init__.py
 da4hiflow/core/assimilator_base.py
 da4hiflow/core/noise.py
@@ -19,7 +21,11 @@ da4hiflow/core/system_base.py
 da4hiflow/systems/__init__.py
 da4hiflow/systems/linear1d.py
 da4hiflow/viz/__init__.py
+tests/test_denkf_improves_rmse.py
+tests/test_enkf_improves_rmse.py
 tests/test_import.py
 tests/test_reproducibility.py
+tests/test_reproducibility_denkf.py
+tests/test_reproducibility_enkf.py
 tests/test_runner_outputs_created.py
 tests/test_smoke_runner.py
