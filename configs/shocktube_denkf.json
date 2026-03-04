@@ -1,0 +1,16 @@
+{
+  "system": "shocktube",
+  "assimilator": "denkf",
+  "nx": 64,
+  "steps": 3,
+  "dt": 0.001,
+  "Ne": 8,
+  "init_ens_sigma": 1e-3,
+  "observation": {
+    "type": "schlieren",
+    "sensor_idx": [16, 32, 48],
+    "noise_sigma": 1e-3,
+    "use_logrho": false
+  },
+  "seed": 123
+}

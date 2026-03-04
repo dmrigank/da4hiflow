@@ -14,7 +14,7 @@ class DEnKF:
         self,
         ensemble: np.ndarray,
         y: np.ndarray,
-        sensor_idx: np.ndarray,
+        sensor_idx: object,
         R_sigma: float,
         rng: Optional[np.random.RandomState] = None,
     ) -> np.ndarray:
@@ -40,22 +40,31 @@ class DEnKF:
         Af = ensemble - xf_mean
         Af = Af * self.inflation
 
-        # Observation operator H
-        H = np.zeros((m, n), dtype=float)
-        for i, idx in enumerate(sensor_idx):
-            H[i, idx] = 1.0
-
-        HX = H @ ensemble.T  # (m, Ne)
+        # build HX either via operator or index selection
+        if hasattr(sensor_idx, "apply"):
+            HX_cols = [sensor_idx.apply(ensemble[i]) for i in range(Ne)]
+            HX = np.column_stack(HX_cols)
+            m = HX.shape[0]
+        else:
+            H = np.zeros((m, n), dtype=float)
+            for i, idx in enumerate(sensor_idx):
+                H[i, idx] = 1.0
+            HX = H @ ensemble.T  # (m, Ne)
 
         PfHT = (Af.T @ HX.T) / (Ne - 1)  # (n, m)
         HPfHT = (HX @ HX.T) / (Ne - 1)  # (m, m)
-        R = np.eye(m) * (R_sigma**2)
+        R = np.eye(HPfHT.shape[0]) * (R_sigma ** 2)
         S = HPfHT + R
 
         K = PfHT @ np.linalg.inv(S)
 
         # Analysis mean update
-        innov = y - (H @ xf_mean)
+        # innovation uses operator or index selection
+        if hasattr(sensor_idx, "apply"):
+            y_pred = sensor_idx.apply(xf_mean)
+            innov = y - y_pred
+        else:
+            innov = y - (H @ xf_mean)
         xa_mean = xf_mean + K @ innov
 
         # Update anomalies deterministically using (I - KH/2)

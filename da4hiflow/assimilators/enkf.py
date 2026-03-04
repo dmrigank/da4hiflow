@@ -18,7 +18,7 @@ class EnKF:
         self,
         ensemble: np.ndarray,
         y: np.ndarray,
-        sensor_idx: np.ndarray,
+        sensor_idx: object,
         R_sigma: float,
         rng: Optional[np.random.RandomState] = None,
     ) -> np.ndarray:
@@ -38,36 +38,34 @@ class EnKF:
             rng = np.random.RandomState(0)
 
         Ne, n = ensemble.shape
-        m = len(sensor_idx)
+        # Determine if sensor_idx is an operator
+        if hasattr(sensor_idx, "apply"):
+            # operator-based observations
+            # apply operator to each ensemble member to get HX (m, Ne)
+            HX_cols = [sensor_idx.apply(ensemble[i]) for i in range(Ne)]
+            HX = np.column_stack(HX_cols)
+            m = HX.shape[0]
+            Y = np.tile(y.reshape(m, 1), (1, Ne)) + rng.randn(m, Ne) * R_sigma
+        else:
+            m = len(sensor_idx)
+            # simple index selector
+            H = np.zeros((m, n), dtype=float)
+            for i, idx in enumerate(sensor_idx):
+                H[i, idx] = 1.0
+            HX = H @ ensemble.T
+            Y = np.tile(y.reshape(m, 1), (1, Ne)) + rng.randn(m, Ne) * R_sigma
 
         # Forecast mean and anomalies
         xf_mean = ensemble.mean(axis=0)
         Af = ensemble - xf_mean
-        # Apply multiplicative inflation
         Af = Af * self.inflation
 
-        # Observation operator H: picks indices
-        H = np.zeros((m, n), dtype=float)
-        for i, idx in enumerate(sensor_idx):
-            H[i, idx] = 1.0
-
-        # Perturbed observations
-        Y = np.tile(y.reshape(m, 1), (1, Ne)) + rng.randn(m, Ne) * R_sigma
-
-        # Project ensemble to observation space
-        HX = H @ ensemble.T  # (m, Ne)
-
-        # Compute sample covariance between state and observations
         PfHT = (Af.T @ HX.T) / (Ne - 1)  # (n, m)
         HPfHT = (HX @ HX.T) / (Ne - 1)  # (m, m)
-
-        R = np.eye(m) * (R_sigma**2)
+        R = np.eye(HPfHT.shape[0]) * (R_sigma ** 2)
         S = HPfHT + R
-
-        # Kalman gain
         K = PfHT @ np.linalg.inv(S)
 
-        # Update each ensemble member using its perturbed obs
         Xa = ensemble.copy()
         for j in range(Ne):
             innov = Y[:, j] - HX[:, j]
