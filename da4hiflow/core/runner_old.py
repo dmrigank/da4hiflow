@@ -106,10 +106,10 @@ def run_experiment(
 ) -> Path:
     """Execute a simple DA experiment and write results to disk.
 
-    The configuration dictionary supports two system types: ``linear`` and
-    ``shocktube``. For ``linear`` the old top-level ``sensor_idx`` and
-    ``noise_sigma`` keys are used. For ``shocktube`` provide an ``observation``
-    dict with keys like ``type``, ``sensor_idx`` and ``noise_sigma``.
+    The configuration dictionary should contain the keys:
+    ``seed``, ``n``, ``steps``, ``dt``, ``sensor_idx``, ``noise_sigma``.
+
+    Returns the path to the directory where outputs were written.
     """
     output_root = Path(output_root)
     if run_name is None:
@@ -121,45 +121,16 @@ def run_experiment(
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
-    # build system and observation spec/operator
-    system_type = config.get("system", "linear")
+    # build objects
+    spec = ObservationSpec(
+        sensor_idx=config["sensor_idx"],
+        noise_sigma=config["noise_sigma"],
+    )
+    system = Linear1DSystem(n=config["n"], seed=config["seed"])
     steps = config["steps"]
     dt = config.get("dt", 1.0)
-
-    if system_type == "linear":
-        system = Linear1DSystem(n=config["n"], seed=config["seed"])
-        n = config["n"]
-        # simple point observations (back-compat)
-        sensor_idx = np.array(config.get("sensor_idx", []), dtype=int)
-        spec = ObservationSpec(sensor_idx=list(sensor_idx), noise_sigma=float(config.get("noise_sigma", 1e-6)))
-        obs_operator = None
-    elif system_type == "shocktube":
-        from da4hiflow.systems.euler1d_shocktube import Euler1DShockTube
-        from da4hiflow.core.obs import PointProbeObservation, SchlierenObservation
-
-        system = Euler1DShockTube(nx=int(config.get("nx", 100)),
-                                  left=tuple(config.get("left", (1.0, 0.0, 1.0))),
-                                  right=tuple(config.get("right", (0.125, 0.0, 0.1))),
-                                  gamma=float(config.get("gamma", 1.4)),
-                                  cfl=float(config.get("cfl", 0.5)))
-        # flattened state length
-        n = system.nx * 3
-
-        # build observation operator
-        obs_cfg = config.get("observation", {})
-        obs_type = obs_cfg.get("type", "point")
-        if obs_type == "point":
-            var = obs_cfg.get("variable", "rho")
-            sensor_idx = obs_cfg.get("sensor_idx", list(range(system.nx)))
-            obs_operator = PointProbeObservation(var, sensor_idx, obs_cfg.get("noise_sigma", 1e-3))
-        elif obs_type == "schlieren":
-            sensor_idx = obs_cfg.get("sensor_idx", list(range(system.nx)))
-            obs_operator = SchlierenObservation(sensor_idx, obs_cfg.get("noise_sigma", 1e-3), obs_cfg.get("use_logrho", False))
-        else:
-            raise ValueError(f"Unknown observation type: {obs_type}")
-        spec = None
-    else:
-        raise ValueError(f"Unknown system type: {system_type}")
+    n = config["n"]
+    sensor_idx = np.array(config["sensor_idx"], dtype=int)
 
     # assimilation type: 'direct' | 'enkf' | 'denkf'
     assim_type = config.get("assimilator", "direct")
@@ -192,20 +163,9 @@ def run_experiment(
         Ne = int(config.get("Ne", 20))
         init_ens_sigma = float(config.get("init_ens_sigma", 1e-3))
         # ensemble shape (Ne, n)
-        if system_type == "shocktube":
-            # perturb primitives around truth initial condition then convert
-            prim0 = system.cons_to_prim(truth[0].reshape(system.nx, 3))
-            ensemble = np.empty((Ne, n))
-            for i in range(Ne):
-                prim_pert = prim0.copy()
-                # perturb rho,u,p independently
-                prim_pert[:, 0] += rng.randn(system.nx) * init_ens_sigma
-                prim_pert[:, 1] += rng.randn(system.nx) * init_ens_sigma
-                prim_pert[:, 2] += rng.randn(system.nx) * init_ens_sigma
-                U = system.prim_to_cons(prim_pert)
-                ensemble[i] = U.flatten()
-        else:
-            ensemble = np.tile(truth[0].reshape(1, n), (Ne, 1)) + rng.randn(Ne, n) * init_ens_sigma
+        ensemble = (
+            np.tile(truth[0].reshape(1, n), (Ne, 1)) + rng.randn(Ne, n) * init_ens_sigma
+        )
 
     for k in range(steps):
         # truth evolves
@@ -219,30 +179,19 @@ def run_experiment(
             forecast_mean[k + 1] = fmean
 
             # observe truth and add noise
-            if obs_operator is not None:
-                y_true = obs_operator.apply(truth[k + 1])
-                R_sigma = float(np.sqrt(obs_operator.measurement_noise_cov().diagonal()[0]))
-                y = y_true + rng.randn(*y_true.shape) * R_sigma
-                observations[k] = y
-                # analysis update (ensemble returned) using operator
-                ensemble = assim.analysis(ensemble, y, obs_operator, R_sigma, rng)
-            else:
-                y_true = observe(truth[k + 1], spec)
-                y = add_gaussian_noise(y_true, spec.noise_sigma, rng)
-                observations[k] = y
-                ensemble = assim.analysis(ensemble, y, sensor_idx, spec.noise_sigma, rng)
+            y_true = observe(truth[k + 1], spec)
+            y = add_gaussian_noise(y_true, spec.noise_sigma, rng)
+            observations[k] = y
+
+            # analysis update (ensemble returned)
+            ensemble = assim.analysis(ensemble, y, sensor_idx, spec.noise_sigma, rng)
             amean = ensemble.mean(axis=0)
             analysis_mean[k + 1] = amean
 
-            if obs_operator is not None:
-                # compute predicted observations from forecast mean
-                ypred = obs_operator.apply(fmean)
-                innov = y - ypred
-            else:
-                innov = y - fmean[sensor_idx]
+            innov = y - fmean[sensor_idx]
             rmse_forecast = np.sqrt(np.mean((fmean - truth[k + 1]) ** 2))
             rmse_analysis = np.sqrt(np.mean((amean - truth[k + 1]) ** 2))
-            rmse_innov = np.sqrt(np.mean(innov ** 2))
+            rmse_innov = np.sqrt(np.mean(innov**2))
         else:
             # deterministic single-state pipeline using direct insertion
             forecast_mean[k + 1] = system.step(analysis_mean[k])
@@ -257,7 +206,7 @@ def run_experiment(
 
             rmse_forecast = np.sqrt(np.mean((forecast_mean[k + 1] - truth[k + 1]) ** 2))
             rmse_analysis = np.sqrt(np.mean((analysis_mean[k + 1] - truth[k + 1]) ** 2))
-            rmse_innov = np.sqrt(np.mean(innov ** 2))
+            rmse_innov = np.sqrt(np.mean(innov**2))
 
         time = dt * (k + 1)
         metrics.append((k + 1, time, rmse_forecast, rmse_analysis, rmse_innov))
@@ -265,7 +214,9 @@ def run_experiment(
     # write metrics
     with open(output_dir / "metrics.csv", "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["step", "time", "rmse_forecast", "rmse_analysis", "rmse_innov"])
+        writer.writerow(
+            ["step", "time", "rmse_forecast", "rmse_analysis", "rmse_innov"]
+        )
         writer.writerows(metrics)
 
     # save snapshots (means for ensemble methods)
